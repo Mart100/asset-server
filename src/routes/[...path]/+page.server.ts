@@ -2,11 +2,13 @@ import {
 	getFolderContent,
 	processAndSaveImage,
 	deleteImage,
-	updateMetadata
+	updateMetadata,
+	slugify
 } from '$lib/server/storage';
 import { error } from '@sveltejs/kit';
 import { PUBLIC_ASSETS_BASE_URL } from '$env/static/public';
 import type { PageServerLoad, Actions } from './$types';
+import path from 'node:path';
 
 export const load: PageServerLoad = async ({ params }) => {
 	const folderPath = params.path || '';
@@ -23,10 +25,47 @@ export const load: PageServerLoad = async ({ params }) => {
 };
 
 export const actions: Actions = {
+	checkDuplicates: async ({ params, request }) => {
+		const folderPath = params.path || '';
+		const data = await request.formData();
+		const filenames = JSON.parse(data.get('filenames') as string) as string[];
+
+		const content = await getFolderContent(folderPath);
+		const existingSlugs = new Set(
+			content.images.map((f) => {
+				const parts = f.split('-');
+				return parts.slice(0, -1).join('-');
+			})
+		);
+
+		const duplicates = filenames.filter((f) => {
+			const slug = slugify(path.parse(f).name);
+			return existingSlugs.has(slug);
+		});
+
+		return { duplicates };
+	},
 	upload: async ({ params, request }) => {
 		const folderPath = params.path || '';
 		const data = await request.formData();
 		const files = data.getAll('images') as File[];
+		const replace = data.get('replace') === 'true';
+
+		if (replace) {
+			const content = await getFolderContent(folderPath);
+			for (const file of files) {
+				const slug = slugify(path.parse(file.name).name);
+				const toDelete = content.images.filter((f) => {
+					const parts = f.split('-');
+					if (parts.length < 2) return false;
+					const existingSlug = parts.slice(0, -1).join('-');
+					return existingSlug === slug;
+				});
+				for (const f of toDelete) {
+					await deleteImage(folderPath, f);
+				}
+			}
+		}
 
 		for (const file of files) {
 			if (file.size > 0) {

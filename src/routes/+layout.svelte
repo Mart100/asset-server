@@ -88,6 +88,12 @@
 		menuVisible = false;
 	}
 
+	function handleDownloadZip() {
+		const path = contextFolder ? contextFolder.path : '';
+		window.location.href = `/api/download/${path}`;
+		hideMenu();
+	}
+
 	async function handleNewFolder() {
 		const parentPath = contextFolder ? contextFolder.path : '';
 		const name = window.prompt(`New folder in ${parentPath || 'root'}:`);
@@ -370,6 +376,13 @@
 					class="w-full rounded px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-700"
 				>
 					New Folder
+				</button>
+				<button
+					onclick={handleDownloadZip}
+					role="menuitem"
+					class="w-full rounded px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-700"
+				>
+					Download ZIP
 				</button>
 				{#if contextFolder}
 					<button

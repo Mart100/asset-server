@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 
 const STORAGE_ROOT = path.resolve(env.STORAGE_ROOT || './storage');
 
-function validatePath(folderPath: string) {
+export function validatePath(folderPath: string) {
 	const absolutePath = path.resolve(STORAGE_ROOT, folderPath);
 	const relative = path.relative(STORAGE_ROOT, absolutePath);
 	if (relative.startsWith('..') || path.isAbsolute(relative)) {
@@ -16,7 +16,7 @@ function validatePath(folderPath: string) {
 	return absolutePath;
 }
 
-function slugify(text: string) {
+export function slugify(text: string) {
 	return text
 		.toString()
 		.toLowerCase()
@@ -69,20 +69,18 @@ export async function getFolderTree(currentPath = ''): Promise<FolderNode[]> {
 	const absolutePath = validatePath(currentPath);
 	const entries = await fs.readdir(absolutePath, { withFileTypes: true });
 
-	const folders: FolderNode[] = [];
-
-	for (const entry of entries) {
-		if (entry.isDirectory() && !isInternalDir(entry.name)) {
-			const relativePath = path.join(currentPath, entry.name);
-			folders.push({
-				name: entry.name,
-				path: relativePath.replace(/\\/g, '/'),
-				children: await getFolderTree(relativePath)
-			});
-		}
-	}
-
-	return folders;
+	return await Promise.all(
+		entries
+			.filter((entry) => entry.isDirectory() && !isInternalDir(entry.name))
+			.map(async (entry) => {
+				const relativePath = path.join(currentPath, entry.name);
+				return {
+					name: entry.name,
+					path: relativePath.replace(/\\/g, '/'),
+					children: await getFolderTree(relativePath)
+				};
+			})
+	);
 }
 
 export async function getFolderContent(folderPath: string) {
@@ -115,16 +113,61 @@ export async function getFolderContent(folderPath: string) {
 	const unorderedImages = images.filter((name) => !metadata.order.includes(name));
 	metadata.order = [...metadata.order, ...unorderedImages];
 
-	const subfolders = entries
-		.filter((entry) => entry.isDirectory() && !isInternalDir(entry.name))
-		.map((entry) => entry.name);
+	const subfolders = await Promise.all(
+		entries
+			.filter((entry) => entry.isDirectory() && !isInternalDir(entry.name))
+			.map(async (entry) => ({
+				name: entry.name,
+				size: await getRecursiveSize(path.join(absolutePath, entry.name))
+			}))
+	);
+
+	// Calculate total folder size efficiently by summing children + current files
+	const subfoldersSize = subfolders.reduce((acc, s) => acc + s.size, 0);
+
+	// Get size of current folder's immediate files (index.json, webp/, originals/, etc.)
+	let currentFilesSize = 0;
+	try {
+		const internalDirs = await fs.readdir(absolutePath, { withFileTypes: true });
+		for (const entry of internalDirs) {
+			const entryPath = path.join(absolutePath, entry.name);
+			if (entry.isFile()) {
+				const stats = await fs.stat(entryPath);
+				currentFilesSize += stats.size;
+			} else if (isInternalDir(entry.name)) {
+				currentFilesSize += await getRecursiveSize(entryPath);
+			}
+		}
+	} catch {
+		// Ignore
+	}
+
+	const totalSize = subfoldersSize + currentFilesSize;
 
 	return {
 		images: metadata.order,
 		sizes: metadata.sizes || [],
 		subfolders,
-		path: folderPath
+		path: folderPath,
+		totalSize
 	};
+}
+
+async function getRecursiveSize(absolutePath: string): Promise<number> {
+	let total = 0;
+	const entries = await fs.readdir(absolutePath, { withFileTypes: true });
+
+	for (const entry of entries) {
+		const entryPath = path.join(absolutePath, entry.name);
+		if (entry.isDirectory()) {
+			total += await getRecursiveSize(entryPath);
+		} else {
+			const stats = await fs.stat(entryPath);
+			total += stats.size;
+		}
+	}
+
+	return total;
 }
 
 export async function processAndSaveImage(folderPath: string, file: File) {
@@ -157,7 +200,9 @@ export async function processAndSaveImage(folderPath: string, file: File) {
 	// Update metadata and trigger derivatives
 	await updateMetadata(folderPath, async (meta) => {
 		meta.order = meta.order || [];
-		meta.order.push(webpFilename);
+		if (!meta.order.includes(webpFilename)) {
+			meta.order.push(webpFilename);
+		}
 
 		// Generate derivatives for existing sizes
 		if (meta.sizes) {

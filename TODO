@@ -1,0 +1,11 @@
+- Can't upload big files (Nginx limit?)
+- Edit thumbnail size
+
+- [x] Fix uploading image twice
+- [x] Add api to get list of images
+- [x] Add api to get folder structure
+- [x] Easily download folder / everything as zip
+- [x] Copy image name
+- [x] Fix Popup on rightmost image contextmenu dissapears
+- [x] Show storage size
+- [x] Fix file drop blue dropzone dissapear when scrolled

@@ -1,18 +1,29 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
+	import { enhance, deserialize } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 
 	interface Props {
 		data: {
 			images: string[];
 			sizes: string[];
-			subfolders: string[];
+			subfolders: { name: string; size: number }[];
 			path: string;
 			publicBaseUrl: string;
+			totalSize: number;
 		};
 	}
 
 	let { data }: Props = $props();
+
+	const parentPath = $derived(data.path ? data.path.split('/').slice(0, -1).join('/') : null);
+
+	function formatBytes(bytes: number) {
+		if (bytes === 0) return '0 Bytes';
+		const k = 1024;
+		const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+		const i = Math.floor(Math.log(bytes) / Math.log(k));
+		return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+	}
 
 	let draggingIndex = $state<number | null>(null);
 
@@ -41,7 +52,23 @@
 		}
 
 		contextImage = filename;
-		menuPos = { x: e.clientX, y: e.clientY };
+
+		// Menu dimensions
+		const menuWidth = 224; // w-56
+		const menuHeight = 200; // approximation
+
+		let x = e.clientX;
+		let y = e.clientY;
+
+		// Adjust if regular menu overflows
+		if (x + menuWidth > window.innerWidth) {
+			x -= menuWidth;
+		}
+		if (y + menuHeight > window.innerHeight) {
+			y -= menuHeight;
+		}
+
+		menuPos = { x, y };
 		menuVisible = true;
 		submenuVisible = false;
 	}
@@ -239,9 +266,44 @@
 	}
 
 	async function handleUpload(files: FileList | File[], targetPath?: string) {
+		if (!files || files.length === 0) return;
+
+		// 1. Check for duplicates
+		const filenames = Array.from(files).map((f) => f.name);
+		const checkFormData = new FormData();
+		checkFormData.append('filenames', JSON.stringify(filenames));
+
+		const checkUrl =
+			targetPath !== undefined ? `/${targetPath}?/checkDuplicates` : '?/checkDuplicates';
+		const checkResponse = await fetch(checkUrl, {
+			method: 'POST',
+			body: checkFormData
+		});
+
+		let replace = false;
+		if (checkResponse.ok) {
+			const result = deserialize(await checkResponse.text());
+			if (result.type === 'success' && result.data && Array.isArray(result.data.duplicates)) {
+				const duplicates = result.data.duplicates as string[];
+				if (duplicates.length > 0) {
+					const msg =
+						duplicates.length === 1
+							? `A version of "${duplicates[0]}" already exists. Replace it?`
+							: `${duplicates.length} files already exist. Replace them?`;
+
+					if (!window.confirm(msg)) return;
+					replace = true;
+				}
+			}
+		}
+
+		// 2. Perform upload
 		const formData = new FormData();
 		for (const file of files) {
 			formData.append('images', file);
+		}
+		if (replace) {
+			formData.append('replace', 'true');
 		}
 
 		// If no targetPath, it uses the current page action
@@ -331,6 +393,11 @@
 		navigator.clipboard.writeText(url);
 		hideMenu();
 	}
+
+	function copyName(filename: string) {
+		navigator.clipboard.writeText(filename);
+		hideMenu();
+	}
 </script>
 
 <svelte:window onclick={hideMenu} />
@@ -338,7 +405,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="relative h-full p-8"
+	class="relative min-h-full p-8"
 	onclick={() => {
 		// Clear selection when clicking non-interactive parts of the page
 		selectedImages = new Set();
@@ -350,7 +417,7 @@
 >
 	{#if isDraggingFile}
 		<div
-			class="pointer-events-none absolute inset-0 z-[100] flex items-center justify-center rounded-xl bg-blue-600/10 backdrop-blur-[2px]"
+			class="pointer-events-none fixed inset-0 z-[100] flex items-center justify-center bg-blue-600/10 backdrop-blur-[2px]"
 		>
 			<div
 				class="flex flex-col items-center gap-4 rounded-3xl border border-zinc-700 bg-zinc-900 px-12 py-10 shadow-2xl"
@@ -380,92 +447,167 @@
 	{/if}
 
 	<header class="mb-8 flex items-center justify-between" onclick={(e) => e.stopPropagation()}>
-		<div>
-			<h1 class="text-2xl font-bold">
-				{data.path ? '/' + data.path : '/ (Root)'}
-			</h1>
-			<div class="mt-2 flex flex-wrap items-center gap-2">
-				<p class="mr-2 text-sm text-zinc-500">{data.images.length} images</p>
+		<div class="flex items-center gap-4">
+			<div>
+				<h1 class="text-2xl font-bold">
+					{data.path ? '/' + data.path : '/ (Root)'}
+				</h1>
+				<div class="mt-2 flex flex-wrap items-center gap-2">
+					<p class="mr-2 text-sm text-zinc-500">
+						{data.images.length} images
+						<span class="mx-1 opacity-30">•</span>
+						{formatBytes(data.totalSize)}
+					</p>
 
-				<div class="mx-2 h-4 w-px bg-zinc-800"></div>
+					<div class="mx-2 h-4 w-px bg-zinc-800"></div>
 
-				<span class="text-xs font-semibold tracking-wider text-zinc-600 uppercase"
-					>Auto-Resizes:</span
-				>
-				{#each data.sizes as size}
-					<span
-						class="flex items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-400"
+					<span class="text-xs font-semibold tracking-wider text-zinc-600 uppercase"
+						>Auto-Resizes:</span
 					>
-						{size}
-						<button
-							onclick={() => handleRemoveSize(size)}
-							class="ml-1 transition-colors hover:text-red-500"
+					{#each data.sizes as size}
+						<span
+							class="flex items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-400"
 						>
-							×
-						</button>
-					</span>
-				{/each}
-				<button
-					onclick={handleAddSize}
-					class="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 transition-colors hover:bg-zinc-700"
-				>
-					+ Add Size
-				</button>
+							{size}
+							<button
+								onclick={() => handleRemoveSize(size)}
+								class="ml-1 transition-colors hover:text-red-500"
+							>
+								×
+							</button>
+						</span>
+					{/each}
+					<button
+						onclick={handleAddSize}
+						class="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 transition-colors hover:bg-zinc-700"
+					>
+						+ Add Size
+					</button>
+				</div>
 			</div>
 		</div>
 
-		<form
-			method="POST"
-			action="?/upload"
-			use:enhance={() => {
-				return async ({ update }) => {
-					await update();
-				};
-			}}
-			enctype="multipart/form-data"
-			class="flex items-center gap-4"
-		>
-			<label
-				class="cursor-pointer rounded-md bg-blue-600 px-4 py-2 font-medium transition-colors hover:bg-blue-700"
+		<div class="flex items-center gap-4">
+			<div
+				class="flex items-center gap-1 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50 p-0.5"
 			>
-				Upload Images
-				<input
-					type="file"
-					name="images"
-					multiple
-					accept="image/*"
-					class="hidden"
-					onchange={(e) => e.currentTarget.form?.requestSubmit()}
-				/>
-			</label>
-		</form>
+				<a
+					href={'/' + (parentPath || '')}
+					data-sveltekit-preload-data="hover"
+					class="flex h-9 w-9 items-center justify-center rounded-md text-zinc-500 transition-all hover:bg-zinc-800 hover:text-white {!data.path
+						? 'pointer-events-none opacity-20'
+						: ''}"
+					title="Go to parent folder"
+				>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						width="18"
+						height="18"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path d="m18 15-6-6-6 6" />
+					</svg>
+				</a>
+
+				<div class="mx-1 h-4 w-px bg-zinc-800"></div>
+
+				<button
+					onclick={() => window.history.back()}
+					class="flex h-9 w-9 items-center justify-center rounded-md text-zinc-500 transition-all hover:bg-zinc-800 hover:text-white"
+					title="Go back"
+				>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						width="18"
+						height="18"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path d="m15 18-6-6 6-6" />
+					</svg>
+				</button>
+				<button
+					onclick={() => window.history.forward()}
+					class="flex h-9 w-9 items-center justify-center rounded-md text-zinc-500 transition-all hover:bg-zinc-800 hover:text-white"
+					title="Go forward"
+				>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						width="18"
+						height="18"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path d="m9 18 6-6-6-6" />
+					</svg>
+				</button>
+			</div>
+
+			<div class="flex items-center gap-4">
+				<label
+					class="cursor-pointer rounded-md bg-blue-600 px-4 py-2 font-medium transition-colors hover:bg-blue-700"
+				>
+					Upload Images
+					<input
+						type="file"
+						name="images"
+						multiple
+						accept="image/*"
+						class="hidden"
+						onchange={(e) => {
+							if (e.currentTarget.files) {
+								handleUpload(e.currentTarget.files);
+								e.currentTarget.value = '';
+							}
+						}}
+					/>
+				</label>
+			</div>
+		</div>
 	</header>
 
 	{#if data.subfolders.length > 0}
 		<div class="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-			{#each data.subfolders as folderName}
+			{#each data.subfolders as { name, size }}
 				<a
-					href="/{data.path ? data.path + '/' : ''}{folderName}"
+					href="/{data.path ? data.path + '/' : ''}{name}"
 					draggable="true"
 					onclick={() => {
 						selectedImages = new Set();
 						lastSelectedIndex = null;
 					}}
-					ondragstart={(e) => handleFolderDragStart(e, folderName)}
+					ondragstart={(e) => handleFolderDragStart(e, name)}
 					ondragover={(e) => e.preventDefault()}
-					ondragenter={(e) => handleFolderDragEnter(folderName, e)}
-					ondragleave={(e) => handleFolderDragLeave(folderName, e)}
+					ondragenter={(e) => handleFolderDragEnter(name, e)}
+					ondragleave={(e) => handleFolderDragLeave(name, e)}
 					ondrop={(e) => {
 						dragonFolder = null;
-						handleDropToFolder(e, folderName);
+						handleDropToFolder(e, name);
 					}}
-					class="flex items-center gap-3 rounded-lg border p-3 transition-all {dragonFolder ===
-					folderName
+					class="flex flex-col gap-1 rounded-lg border p-3 transition-all {dragonFolder === name
 						? 'border-blue-500 bg-blue-500/10 shadow-lg ring-1 ring-blue-500'
 						: 'border-zinc-800 bg-zinc-900 hover:border-zinc-700 hover:bg-zinc-800'}"
 				>
-					<span class="text-xl">📁</span>
-					<span class="truncate text-sm font-medium text-zinc-300">{folderName}</span>
+					<div class="flex items-center gap-3">
+						<span class="text-xl">📁</span>
+						<span class="truncate text-sm font-medium text-zinc-300">{name}</span>
+					</div>
+					<div class="ml-8 text-[10px] text-zinc-500">
+						{formatBytes(size)}
+					</div>
 				</a>
 			{/each}
 		</div>
@@ -569,8 +711,18 @@
 				{#if submenuVisible}
 					<div
 						role="menu"
-						class="absolute top-0 left-full ml-px w-40 rounded-lg border border-zinc-700 bg-zinc-800 p-1 shadow-2xl"
+						class="absolute top-0 {menuPos.x + 224 + 160 > window.innerWidth
+							? 'right-full mr-px'
+							: 'left-full ml-px'} w-40 rounded-lg border border-zinc-700 bg-zinc-800 p-1 shadow-2xl"
 					>
+						<button
+							onclick={() => copyName(contextImage!)}
+							class="w-full rounded px-3 py-2 text-left text-xs font-medium transition-colors hover:bg-zinc-700"
+						>
+							Copy Filename (.webp)
+						</button>
+						<div class="my-1 border-t border-zinc-700"></div>
+
 						<button
 							onclick={() => copyUrl(contextImage!)}
 							class="w-full rounded px-3 py-2 text-left text-xs transition-colors hover:bg-zinc-700"
