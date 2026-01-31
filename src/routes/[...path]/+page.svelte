@@ -317,21 +317,3 @@
 	onDelete={handleDeleteImages}
 	onToggleSubmenu={(v) => (submenuVisible = v)}
 />
-
-<footer
-	class="fixed right-0 bottom-0 left-0 z-40 border-t border-zinc-800 bg-zinc-950/80 p-4 backdrop-blur-md"
->
-	<div class="mx-auto flex max-w-7xl items-center justify-between px-4">
-		<div class="text-xs text-zinc-500">
-			{data.images.length} images, {data.subfolders.length} folders
-			{#if selection.size > 0}
-				<span class="ml-2 text-white">• {selection.size} selected</span>
-			{/if}
-		</div>
-		<div class="flex gap-4">
-			<button class="text-xs text-zinc-400 hover:text-white" onclick={clearSelection}>
-				Clear Selection
-			</button>
-		</div>
-	</div>
-</footer>
