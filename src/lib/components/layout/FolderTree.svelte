@@ -65,6 +65,7 @@
 					<span class="flex-1 truncate">{node.name}</span>
 
 					{#if node.children.length > 0}
+						<!-- svelte-ignore node_invalid_placement_ssr -->
 						<button
 							type="button"
 							title={isExpanded ? 'Collapse' : 'Expand'}
